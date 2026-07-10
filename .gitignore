@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Regenerable local caches (chunked docs, eval set, vector store) — see plan.md 0.c
+/data/
+/vectordb/
