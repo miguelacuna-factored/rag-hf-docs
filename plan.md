@@ -29,6 +29,7 @@ Put this ordering in the README so a reader isn't left to infer it from file lis
 These apply to every module below; call them out explicitly to whoever implements this plan (including an LLM) so style doesn't drift file-to-file:
 
 - **Plain functions over classes.** Every stage is a function (or a small set of them), not a class hierarchy. Do not introduce an abstract base class, protocol, or "strategy pattern" object for chunkers/embedders/backends just because there are two of each — a `chunk_strategy: str` argument plus an if/dict-dispatch is easier for a junior dev to trace than a class hierarchy, and there's no third implementation coming that would justify the abstraction. This is SOLID's Single Responsibility Principle applied at the *function/module* level (one file = one pipeline stage), not at the class level.
+- **Linear orchestration, dependencies passed explicitly.** `main.py` (and `pipeline.py` for the query path) is the only place that wires stages together: it imports every stage's function and calls them in order — `load_raw_dataset` → `load_documents` → chunker → `build_collection` → `search` → `generate` — matching the reading order in §0.a. A stage module never imports and calls the *previous* stage's module itself (e.g. `ingest.py` must not import `dataset.py`); instead every stage function takes its inputs as explicit parameters (raw rows, a `Document` list, an embedder instance, etc.) and the orchestrator threads outputs into the next call as arguments. This is dependency injection in its cheapest form — plain parameter passing, no container, no constructor-injected interfaces/protocols — and it's what actually gives us the "swap a stage without touching its neighbors" property: a stage can be unit-tested or reordered because it never reaches out to fetch its own inputs. Heavier DI (service registries, runtime-resolved interfaces) is not needed for a one-shot CLI pipeline and is explicitly deferred.
 - **Type hints and one-line docstrings on every public function.** Signature + one sentence of *why*, not *what* (the code already says what). E.g. `def search(query: str, collection_name: str, k: int = 5) -> list[Document]:` with a docstring noting the BGE prefix caveat, not restating "does a search."
 - **One vocabulary, used identically everywhere.** Don't let terms drift between sections/files. Use exactly:
   - `scope`: `"subset"` | `"full"`
@@ -90,7 +91,7 @@ This keeps "modular ingestion, retrieval, and generation stages" explicit per th
 
 ## 2. Stage: Ingestion (`ingest.py`)
 
-- `dataset.py` stays the single place that loads the raw HF dataset — refactor its current top-level script (which calls `load_dotenv()` and `load_dataset("m-ric/huggingface_doc", split="train")` at module scope) into one function, `load_raw_dataset() -> Dataset`, wrapping that same call, so nothing runs on import. `ingest.py` imports and calls this function — it does not re-call `load_dataset` itself. This is the DRY boundary: "load raw rows" (`dataset.py`) vs. "shape rows into `Document`s for this pipeline" (`ingest.py`) stay two separate, single-purpose functions instead of one merged or two duplicated.
+- `dataset.py` stays the single place that loads the raw HF dataset — refactor its current top-level script (which calls `load_dotenv()` and `load_dataset("m-ric/huggingface_doc", split="train")` at module scope) into one function, `load_raw_dataset() -> Dataset`, wrapping that same call, so nothing runs on import. Per the linear-orchestration convention (§0.b), `ingest.py` does **not** import `dataset.py` or call `load_raw_dataset` itself — `main.py` calls `load_raw_dataset()` and passes the resulting rows into `load_documents(rows, scope)` as a parameter. This is the DRY boundary: "load raw rows" (`dataset.py`) vs. "shape rows into `Document`s for this pipeline" (`ingest.py`) stay two separate, single-purpose functions instead of one merged or two duplicated, and neither reaches into the other's module to get there.
 - `scope` parameter (`"subset"` | `"full"`): `subset` takes the first N documents (e.g. N=200, tune after a timing dry-run) for fast iteration; `full` uses all ~2,200 docs. Same ingestion code path either way — just a slice before returning.
 - Convert each HF dataset row into a LangChain `Document(page_content=row["text"], metadata={"source": row["source"], ...})`. Check what metadata fields the dataset actually exposes (likely `source` = doc URL/path) — inspect `dataset.column_names` first.
 - Metadata is critical: it's what citations are built from later, so capture a stable identifier per document (URL or path) at ingestion time, before chunking, and propagate it into every chunk's metadata plus a chunk index.
@@ -138,6 +139,26 @@ Factory function returning a `HuggingFaceEmbeddings` instance for:
 ## 8. Orchestration (`pipeline.py`, `main.py`)
 
 - `pipeline.py`: `answer_question(query, collection_name, backend="local"|"api") -> cited answer`, chaining retrieval.py + generation.py. If `search` returns `[]`, skip `generation.py` entirely and return `{answer: "No relevant information found in the corpus.", citations: [], grounded: False}` directly — don't spend an LLM call asking it to notice there's no context.
+- Per the linear-orchestration convention (§0.b), both illustrate the shape every stage call should take — flat, sequential, dependencies passed as arguments, no stage reaching into another stage's module:
+
+  ```python
+  # pipeline.py
+  def answer_question(query, collection_name, backend="local"):
+      chunks = search(query, collection_name)
+      if not chunks:
+          return {"answer": "No relevant information found in the corpus.", "citations": [], "grounded": False}
+      return generate(query, chunks, backend)
+  ```
+
+  ```python
+  # main.py (build subcommand, one combo shown)
+  rows = load_raw_dataset()
+  docs = load_documents(rows, scope)
+  embedder = get_embedder(embedding_model)
+  chunks = chunk_documents(docs, chunk_strategy, scope, embedder)
+  build_collection(chunks, embedder, collection_name(chunk_strategy, embedding_model, scope))
+  ```
+
 - `main.py` CLI with subcommands: `build --scope subset|full` (run ingestion → chunking → embedding → vector store for the 4 combos in that scope), `ask --collection <name> --backend local|api "question"`, `eval --scope subset|full` (run evaluate.py, print/save comparison table).
 
 ## 9. Stage: Evaluation / comparison (`evaluate.py`)

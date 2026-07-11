@@ -1,9 +1,16 @@
-from datasets import load_dataset
+"""Raw dataset loading only.
+
+This module owns the one call that pulls the Hugging Face docs dataset down
+from the Hub. Every other stage of the pipeline gets rows through
+`load_raw_dataset` instead of calling `load_dataset` itself, so there is a
+single place to change if the dataset name/split/token handling ever changes.
+"""
+
+from datasets import Dataset, load_dataset
 from dotenv import load_dotenv
-from os import getenv
 
-load_dotenv()
-hf_token = getenv("HF_TOKEN")
 
-# This single line downloads the data from that repository and loads it into memory
-dataset = load_dataset("m-ric/huggingface_doc", split="train") # train or test or validation
+def load_raw_dataset() -> Dataset:
+    """Load the Hugging Face docs dataset (train split) from the Hub."""
+    load_dotenv()
+    return load_dataset("m-ric/huggingface_doc", split="train")
