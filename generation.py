@@ -9,6 +9,7 @@ import os
 import re
 
 import anthropic
+import logfire
 import torch
 from dotenv import load_dotenv
 from langchain_core.documents import Document
@@ -61,11 +62,16 @@ _local_pipeline = None
 
 
 def _call_local(prompt: str) -> str:
-    global _local_pipeline
-    if _local_pipeline is None:
-        _local_pipeline = pipeline("text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype())
-    output = _local_pipeline([{"role": "user", "content": prompt}], max_new_tokens=300)
-    return output[0]["generated_text"][-1]["content"]
+    # No Logfire integration exists for transformers pipelines, so this span is manual —
+    # unlike _call_api, it won't get automatic token/cost fields.
+    with logfire.span("local_generate", model=LOCAL_MODEL_ID):
+        global _local_pipeline
+        if _local_pipeline is None:
+            _local_pipeline = pipeline(
+                "text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype()
+            )
+        output = _local_pipeline([{"role": "user", "content": prompt}], max_new_tokens=300)
+        return output[0]["generated_text"][-1]["content"]
 
 
 def _call_api(prompt: str) -> str:

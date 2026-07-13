@@ -1,5 +1,15 @@
 """app.py — Gradio UI for comparing chunk_strategy x embedding_model x backend combinations side by side."""
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import logfire
+
+# rag-hf-docs sends telemetry to its own Logfire project (us region); LOGFIRE_TOKEN in .env picks the project.
+logfire.configure(advanced=logfire.AdvancedOptions(base_url="https://logfire-us.pydantic.dev"))
+logfire.instrument_anthropic()  # covers the "api" backend; the local HF backend gets a manual span (see generation.py)
+
 import gradio as gr
 
 from ask import ask

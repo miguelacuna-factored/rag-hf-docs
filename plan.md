@@ -187,3 +187,11 @@ Two design notes that fed back into earlier stages:
 - **Caching now matters.** `embeddings.get_embedder` and `generation.py`'s local backend were both deliberately built with no caching ("this is a one-shot CLI, caching would optimize for a usage pattern that doesn't exist yet" — see Section 0.b/7 history). A long-running UI process is exactly that usage pattern, so both gained a simple module-level cache (keyed by `embedding_model` for embedders; a single lazily-built pipeline instance for the local generation backend) — public signatures unchanged, so no other caller needed to change.
 - **`scope` availability is detected, not hardcoded.** `vectorstore.list_built_scopes()` inspects the raw `chromadb` client's persisted collection names to report which of `"subset"`/`"full"` actually have collections built — `"full"` only appears in the UI once `main.py`'s `build(scope="full")` has actually been run.
 
+## 12. Optional: observability (Logfire, Langfuse)
+
+Separate from the assignment rubric — a comparison of the two tools, using this app as the shared testbed. Scoped to the app side only (`app.py`, `ask.py`, `retrieval.py`, `generation.py`); the build/eval CLI flow in `main.py` isn't instrumented.
+
+- **Logfire** is configured in `app.py` (`logfire.configure()` + `logfire.instrument_anthropic()`), reading `LOGFIRE_TOKEN` from `.env`. It auto-instruments the `api` backend's Anthropic calls; the `local` backend has no first-party integration (no HF `transformers` support), so `generation._call_local` wraps it in a manual `logfire.span`. `ask()` and `retrieval.search()` each get a manual span too, so a query's trace is `ask` → `retrieval` + generation, nested.
+- **Langfuse** (planned, not yet implemented): both SDKs are OpenTelemetry-native and by default attach to the same global `TracerProvider`, so the plan is to configure Logfire first (already done) and let Langfuse's client attach its own span processor on top — no dual instrumentation code needed, since both then see the same spans this file already creates.
+- Deliberately not created: a `.env.example` (none existed before this change) and any instrumentation of the non-LLM pipeline stages (chunking/embedding-build) — out of scope for this side comparison.
+
