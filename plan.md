@@ -16,11 +16,11 @@ The file layout in Section 1 is listed in *build* order. To actually learn the p
 4. `vectorstore.py` — store/index those vectors
 5. `retrieval.py` — pull relevant chunks back out for a query
 6. `generation.py` — turn retrieved chunks + query into a cited answer
-7. `pipeline.py` — wire 5+6 together end-to-end
+7. `ask.py` — wire 5+6 together end-to-end (retrieval + generation = RAG itself)
 8. `main.py` — the CLI entrypoint a reader actually runs first
 9. `evaluate.py` — measure how good steps 2-5 are, across combinations
 
-This is also the build order used in Section 1's file layout and the section numbering below — `evaluate.py` is listed and numbered last in both places since it only depends on `retrieval.py`, not on `pipeline.py`/`main.py`, but is easiest to read once the whole pipeline is in view.
+This is also the build order used in Section 1's file layout and the section numbering below — `evaluate.py` is listed and numbered last in both places since it only depends on `retrieval.py`, not on `ask.py`/`main.py`, but is easiest to read once the whole pipeline is in view.
 
 Put this ordering in the README so a reader isn't left to infer it from file listing order.
 
@@ -29,7 +29,7 @@ Put this ordering in the README so a reader isn't left to infer it from file lis
 These apply to every module below; call them out explicitly to whoever implements this plan (including an LLM) so style doesn't drift file-to-file:
 
 - **Plain functions over classes.** Every stage is a function (or a small set of them), not a class hierarchy. Do not introduce an abstract base class, protocol, or "strategy pattern" object for chunkers/embedders/backends just because there are two of each — a `chunk_strategy: str` argument plus an if/dict-dispatch is easier for a junior dev to trace than a class hierarchy, and there's no third implementation coming that would justify the abstraction. This is SOLID's Single Responsibility Principle applied at the *function/module* level (one file = one pipeline stage), not at the class level.
-- **Linear orchestration, dependencies passed explicitly.** `main.py` (and `pipeline.py` for the query path) is the only place that wires stages together: it imports every stage's function and calls them in order — `load_raw_dataset` → `load_documents` → chunker → `build_collection` → `search` → `generate` — matching the reading order in §0.a. A stage module never imports and calls the *previous* stage's module itself (e.g. `ingest.py` must not import `dataset.py`); instead every stage function takes its inputs as explicit parameters (raw rows, a `Document` list, an embedder instance, etc.) and the orchestrator threads outputs into the next call as arguments. This is dependency injection in its cheapest form — plain parameter passing, no container, no constructor-injected interfaces/protocols — and it's what actually gives us the "swap a stage without touching its neighbors" property: a stage can be unit-tested or reordered because it never reaches out to fetch its own inputs. Heavier DI (service registries, runtime-resolved interfaces) is not needed for a one-shot CLI pipeline and is explicitly deferred.
+- **Linear orchestration, dependencies passed explicitly.** `main.py` (and `ask.py` for the query path) is the only place that wires stages together: it imports every stage's function and calls them in order — `load_raw_dataset` → `load_documents` → chunker → `build_collection` → `search` → `generate` — matching the reading order in §0.a. A stage module never imports and calls the *previous* stage's module itself (e.g. `ingest.py` must not import `dataset.py`); instead every stage function takes its inputs as explicit parameters (raw rows, a `Document` list, an embedder instance, etc.) and the orchestrator threads outputs into the next call as arguments. This is dependency injection in its cheapest form — plain parameter passing, no container, no constructor-injected interfaces/protocols — and it's what actually gives us the "swap a stage without touching its neighbors" property: a stage can be unit-tested or reordered because it never reaches out to fetch its own inputs. Heavier DI (service registries, runtime-resolved interfaces) is not needed for a one-shot CLI pipeline and is explicitly deferred.
 - **Type hints and one-line docstrings on every public function.** Signature + one sentence of *why*, not *what* (the code already says what). E.g. `def search(query: str, collection_name: str, k: int = 5) -> list[Document]:` with a docstring noting the BGE prefix caveat, not restating "does a search."
 - **One vocabulary, used identically everywhere.** Don't let terms drift between sections/files. Use exactly:
   - `scope`: `"subset"` | `"full"`
@@ -59,7 +59,7 @@ Current `pyproject.toml` has `langchain`, `langchain-community`, `sentence-trans
 - `langchain-huggingface` — modern `HuggingFaceEmbeddings` (the old one lives in `langchain-community` and is deprecated)
 - `langchain-experimental` — for `SemanticChunker`
 - `langchain-text-splitters` — for `RecursiveCharacterTextSplitter` (may already be a transitive dep of `langchain`, confirm)
-- `openai` — used only as the OpenRouter-compatible client for the API generation backend (OpenRouter exposes an OpenAI-compatible endpoint)
+- `anthropic` — official SDK for the API generation backend, calling Claude Haiku directly (not via OpenRouter)
 
 Retrieval evaluation (Stage 9) uses manual metrics (Hit Rate@k, MRR@k, Precision@k) computed with plain Python/pandas — no `ragas` or other eval library needed.
 
@@ -67,7 +67,7 @@ Retrieval evaluation (Stage 9) uses manual metrics (Hit Rate@k, MRR@k, Precision
 
 Not used anywhere in this plan and candidates to remove once implementation starts (confirm with the user first): `bitsandbytes` (CUDA-only quantization, not needed since Gemma 2 2B-it runs unquantized in fp16/bf16 on both target machines), `faiss-cpu` (superseded by Chroma), `ragatouille`, `pacmap`, `openpyxl` (leftover from an earlier notebook, unrelated to this pipeline).
 
-Action: `uv add chromadb langchain-chroma langchain-huggingface langchain-experimental openai` once we start implementing (not yet).
+Action taken: `uv add chromadb langchain-chroma langchain-huggingface langchain-experimental anthropic` (the `openai` dependency was added then removed once the API backend moved from OpenRouter to calling Anthropic directly — see Stage 7).
 
 ## 1. Module layout
 
@@ -82,7 +82,7 @@ rag-hf-docs/
 ├── vectorstore.py      # builds/loads the Chroma collections (4 or 8, depending on scope)
 ├── retrieval.py        # semantic search over a given collection
 ├── generation.py       # prompt template + LLM call + citation formatting
-├── pipeline.py         # orchestrates end-to-end query -> retrieve -> generate -> cited answer
+├── ask.py              # orchestrates end-to-end query -> retrieve -> generate -> cited answer (the RAG step itself)
 ├── main.py             # CLI entrypoint (build index | ask a question | run eval)
 └── evaluate.py         # builds a small eval set, scores retrieval quality per combo
 ```
@@ -123,7 +123,7 @@ Factory function returning a `HuggingFaceEmbeddings` instance for:
 - `search(query, collection_name, k=5) -> list[Document]` wrapping Chroma's similarity search.
 - Apply the BGE query-instruction prefix here when the collection uses BGE embeddings.
 - Return documents with metadata intact (source, chunk_strategy) for citation building downstream.
-- An empty result is a legitimate outcome, not an error — `search` just returns `[]`. `pipeline.py` (Section 8) is responsible for deciding what an empty result means for the answer; `search` itself doesn't guess. Note: plain Chroma similarity search returns the `k` nearest chunks regardless of how weak the match is, so `[]` in practice only happens when the collection has fewer than `k` documents — for a genuinely off-topic query, detecting "no good answer" relies on the LLM's "not in corpus" instruction (Section 7), not on this short-circuit. A `score_threshold` param on `search` would make the empty-result path fire for real, but is deferred until after eval numbers show whether it's actually needed.
+- An empty result is a legitimate outcome, not an error — `search` just returns `[]`. `ask.py` (Section 8) is responsible for deciding what an empty result means for the answer; `search` itself doesn't guess. Note: plain Chroma similarity search returns the `k` nearest chunks regardless of how weak the match is, so `[]` in practice only happens when the collection has fewer than `k` documents — for a genuinely off-topic query, detecting "no good answer" relies on the LLM's "not in corpus" instruction (Section 7), not on this short-circuit. A `score_threshold` param on `search` would make the empty-result path fire for real, but is deferred until after eval numbers show whether it's actually needed.
 
 ## 7. Stage: Generation (`generation.py`)
 
@@ -133,18 +133,18 @@ Factory function returning a `HuggingFaceEmbeddings` instance for:
   - Requires inline citation markers (`[1]`, `[2]`) in the generated answer, mapped back to source metadata for a final "Sources:" list.
 - Two pluggable backends behind one interface (`generate(prompt) -> str`), selected via a `backend` param or env var:
   - **Local (default):** `google/gemma-2-2b-it` via `transformers`, loaded in fp16/bf16 with `device_map="auto"` (resolves to MPS on the M1, CUDA on the RTX 5080). No bitsandbytes/quantization needed — the model is small enough to fit both machines unquantized.
-  - **API (optional):** Claude Haiku via OpenRouter, called through the `openai` SDK pointed at OpenRouter's OpenAI-compatible base URL (`https://openrouter.ai/api/v1`), with `OPENROUTER_API_KEY` read from `.env`. Model id e.g. `anthropic/claude-haiku-4.5` (confirm exact OpenRouter slug when implementing — check current model list, since aliases change).
+  - **API (optional):** Claude Haiku called directly via the official `anthropic` SDK's Messages API, with `CLAUDE_API_KEY` read from `.env`. Model id `claude-haiku-4-5-20251001` (alias `claude-haiku-4-5`).
 - Output structure: `{answer: str, citations: [{marker, source}], grounded: bool}`. `grounded` is `True` only if the answer contains at least one citation marker that maps back to a retrieved chunk; it's `False` whenever the LLM outputs the "not in corpus" phrase (or the marker check fails) — this is a plain string/regex check in `generation.py`, not something the LLM self-reports.
 
-## 8. Orchestration (`pipeline.py`, `main.py`)
+## 8. Orchestration (`ask.py`, `main.py`)
 
-- `pipeline.py`: `answer_question(query, collection_name, backend="local"|"api") -> cited answer`, chaining retrieval.py + generation.py. If `search` returns `[]`, skip `generation.py` entirely and return `{answer: "No relevant information found in the corpus.", citations: [], grounded: False}` directly — don't spend an LLM call asking it to notice there's no context.
+- `ask.py`: `ask(query, collection_name, embedder, embedding_model, backend="local"|"api") -> cited answer`, chaining retrieval.py + generation.py. If `search` returns `[]`, skip `generation.py` entirely and return `{answer: "No relevant information found in the corpus.", citations: [], grounded: False}` directly — don't spend an LLM call asking it to notice there's no context.
 - Per the linear-orchestration convention (§0.b), both illustrate the shape every stage call should take — flat, sequential, dependencies passed as arguments, no stage reaching into another stage's module:
 
   ```python
-  # pipeline.py
-  def answer_question(query, collection_name, backend="local"):
-      chunks = search(query, collection_name)
+  # ask.py
+  def ask(query, collection_name, embedder, embedding_model, backend="local"):
+      chunks = search(query, collection_name, embedder, embedding_model)
       if not chunks:
           return {"answer": "No relevant information found in the corpus.", "citations": [], "grounded": False}
       return generate(query, chunks, backend)
@@ -165,13 +165,14 @@ Factory function returning a `HuggingFaceEmbeddings` instance for:
 
 Rubric requires "a comparison table showing chunking strategy vs retrieval quality with real numbers."
 
-- Build a small labeled eval set (~20-30 question/answer pairs): sample chunks from the ingested corpus, prompt a top-tier API model (e.g. Claude, via OpenRouter or direct API) to generate a natural question that chunk answers plus the known ground-truth source, then do a quick manual pass to drop any low-quality/ambiguous pairs. Cache as `./data/eval_set.json` via the same `load_cached_or_build` helper (Section 0.c) so it's built once and reused across all collection combos and re-runs instead of regenerated (and re-billed, for the API call) every time.
-- Metrics computed per (chunking strategy × embedding model × scope) combination, at fixed k:
+- Build a small labeled eval set (25 question/source pairs): sample **docs** (pre-chunking, not any particular chunk set — ground truth is doc-level, so this keeps the eval set identical across all 4 combinations instead of biased toward one chunking strategy's boundaries), prompt Claude Haiku directly (same `anthropic` SDK/model as `generation.py`'s API backend) to generate a natural question that excerpt answers, paired with the doc's `source` as ground truth. The "quick manual pass to drop low-quality/ambiguous pairs" doesn't translate into code — it's explicitly skipped and named as a caveat in the results write-up rather than silently dropped. Cache as `./data/eval_set_{scope}.json` via the same `load_cached_or_build` helper (Section 0.c) so it's built once and reused across all collection combos and re-runs instead of regenerated (and re-billed, for the API call) every time.
+- Metrics computed per (chunking strategy × embedding model × scope) combination, at fixed k=5:
   - **Hit Rate@k** — did any retrieved chunk come from the correct source doc?
   - **MRR@k** — rank of the first correct chunk.
   - **Precision@k** — fraction of retrieved chunks from a correct source.
-- Produces a table (4 rows for `subset`-only, 8 rows if `full` is also built) with these three metrics, written to `./data/results.md` or printed via a small pandas DataFrame.
-- Only exercises `retrieval.py` (steps 2-5 of the pipeline) — it does not need `generation.py` or `pipeline.py`, since it scores retrieval quality, not answer quality.
+- Produces a table (4 rows for `subset`-only, 8 rows if `full` is also built) with these three metrics, printed and written to `./data/results.md` — hand-formatted markdown rather than `DataFrame.to_markdown()`, since that needs the extra `tabulate` dependency just for a 4-row table.
+- Only exercises `retrieval.py` (steps 2-5 of the pipeline) — it does not need `generation.py` or `ask.py`, since it scores retrieval quality, not answer quality.
+- After a real run produces real numbers, a short (bulleted, no essay) Conclusions + Caveats section gets appended to `./data/results.md` by hand, grounded in the actual output — not pre-written.
 
 ## 10. Write-up deliverable
 
