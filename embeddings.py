@@ -12,7 +12,11 @@ MODEL_IDS = {
     "bge": "BAAI/bge-base-en-v1.5",
 }
 
+_embedders: dict[str, HuggingFaceEmbeddings] = {}
+
 
 def get_embedder(embedding_model: str) -> HuggingFaceEmbeddings:
-    """Build the `HuggingFaceEmbeddings` instance for `embedding_model` ("minilm" | "bge")."""
-    return HuggingFaceEmbeddings(model_name=MODEL_IDS[embedding_model])
+    """Build (once) and reuse the `HuggingFaceEmbeddings` instance for `embedding_model` ("minilm" | "bge")."""
+    if embedding_model not in _embedders:
+        _embedders[embedding_model] = HuggingFaceEmbeddings(model_name=MODEL_IDS[embedding_model])
+    return _embedders[embedding_model]

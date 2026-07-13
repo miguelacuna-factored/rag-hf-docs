@@ -57,9 +57,14 @@ def _pick_dtype() -> str:
     return "float32"
 
 
+_local_pipeline = None
+
+
 def _call_local(prompt: str) -> str:
-    pipe = pipeline("text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype())
-    output = pipe([{"role": "user", "content": prompt}], max_new_tokens=300)
+    global _local_pipeline
+    if _local_pipeline is None:
+        _local_pipeline = pipeline("text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype())
+    output = _local_pipeline([{"role": "user", "content": prompt}], max_new_tokens=300)
     return output[0]["generated_text"][-1]["content"]
 
 

@@ -8,6 +8,7 @@ instead of re-embedding the whole corpus per search.
 
 from pathlib import Path
 
+import chromadb
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -18,6 +19,13 @@ VECTORDB_DIR = Path("vectordb")
 def collection_name(chunk_strategy: str, embedding_model: str, scope: str) -> str:
     """Build the canonical Chroma collection name for a (chunk_strategy, embedding_model, scope) combo."""
     return f"{chunk_strategy}_{embedding_model}_{scope}"
+
+
+def list_built_scopes() -> list[str]:
+    """Which of "subset"/"full" have at least one collection already built."""
+    client = chromadb.PersistentClient(path=str(VECTORDB_DIR))
+    built = {c.name.rsplit("_", 1)[-1] for c in client.list_collections()}
+    return [s for s in ["subset", "full"] if s in built]
 
 
 def build_collection(chunks: list[Document], embedder: HuggingFaceEmbeddings, name: str) -> Chroma:

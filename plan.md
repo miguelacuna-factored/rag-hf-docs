@@ -178,3 +178,12 @@ Rubric requires "a comparison table showing chunking strategy vs retrieval quali
 
 One paragraph (per rubric) on what would change with a larger corpus — draft after eval numbers are in, informed by observed bottlenecks (e.g. semantic chunking cost scaling, embedding throughput, Chroma index size/latency, need for approximate search or a managed vector DB, need for a larger/curated eval set).
 
+## 11. Optional: interactive UI (`app.py`)
+
+Not one of the rubric's required modular stages — just a way to exercise `ask.py` interactively instead of via one-off scripts. A Gradio `Blocks` app with two side-by-side comparison columns (each with its own `chunk_strategy`/`embedding_model`/`backend` dropdowns, sharing one query box and a `scope` dropdown), so two combinations can be compared on the same question at once — the same comparison `evaluate.py` does in batch, just interactive.
+
+Two design notes that fed back into earlier stages:
+
+- **Caching now matters.** `embeddings.get_embedder` and `generation.py`'s local backend were both deliberately built with no caching ("this is a one-shot CLI, caching would optimize for a usage pattern that doesn't exist yet" — see Section 0.b/7 history). A long-running UI process is exactly that usage pattern, so both gained a simple module-level cache (keyed by `embedding_model` for embedders; a single lazily-built pipeline instance for the local generation backend) — public signatures unchanged, so no other caller needed to change.
+- **`scope` availability is detected, not hardcoded.** `vectorstore.list_built_scopes()` inspects the raw `chromadb` client's persisted collection names to report which of `"subset"`/`"full"` actually have collections built — `"full"` only appears in the UI once `main.py`'s `build(scope="full")` has actually been run.
+
