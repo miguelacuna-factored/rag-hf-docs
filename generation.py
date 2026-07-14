@@ -21,6 +21,9 @@ load_dotenv()
 LOCAL_MODEL_ID = "google/gemma-2-2b-it"
 API_MODEL_ID = "claude-haiku-4-5-20251001"
 NOT_IN_CORPUS_PHRASE = "The answer isn't in the corpus."
+# Greedy decoding: given the same retrieved chunks, Gemma should reach the same
+# grounded/not-grounded verdict every time, instead of sampling a different one per run.
+LOCAL_DO_SAMPLE = False
 
 PROMPT_TEMPLATE = """Answer the question using ONLY the numbered sources below. Cite sources inline using [1], [2], etc. If the sources don't contain the answer, respond exactly with: "{not_in_corpus}"
 
@@ -76,7 +79,9 @@ def _call_local(prompt: str) -> str:
     with logfire.span("local_generate", model=LOCAL_MODEL_ID):
         warm_local_pipeline()
         start = time.perf_counter()
-        output = _local_pipeline([{"role": "user", "content": prompt}], max_new_tokens=300)
+        output = _local_pipeline(
+            [{"role": "user", "content": prompt}], max_new_tokens=300, do_sample=LOCAL_DO_SAMPLE
+        )
         duration_seconds = time.perf_counter() - start
         answer = output[0]["generated_text"][-1]["content"]
         tokenizer = _local_pipeline.tokenizer
@@ -104,7 +109,7 @@ def _call_api(prompt: str) -> str:
 def _parse_answer(raw_answer: str, chunks: list[Document]) -> dict:
     markers = sorted(set(int(m) for m in re.findall(r"\[(\d+)\]", raw_answer)))
     citations = [
-        {"marker": m, "source": chunks[m - 1].metadata["source"]}
+        {"marker": m, "source": chunks[m - 1].metadata["source"], "distance": chunks[m - 1].metadata["distance"]}
         for m in markers
         if 1 <= m <= len(chunks)
     ]

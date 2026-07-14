@@ -21,6 +21,8 @@ def search(query: str, name: str, embedder: HuggingFaceEmbeddings, embedding_mod
         store = Chroma(collection_name=name, embedding_function=embedder, persist_directory=str(VECTORDB_DIR))
         search_query = f"{BGE_QUERY_PREFIX}{query}" if embedding_model == "bge" else query
         scored = store.similarity_search_with_score(search_query, k=k)
+        for doc, score in scored:
+            doc.metadata["distance"] = score  # carried through generation into citations (see _parse_answer)
         chunks = [
             {"source": doc.metadata["source"], "distance": score, "length": len(doc.page_content)}
             for doc, score in scored

@@ -36,13 +36,15 @@ def warm_backend(backend: str) -> None:
 
 
 def format_entry(entry: dict) -> str:
-    citations = ", ".join(f"[{c['marker']}] {c['source']}" for c in entry["citations"]) or "none"
+    citations = (
+        "\n".join(f"- ({c['distance']:.4f}) [{c['marker']}] {c['source']}" for c in entry["citations"]) or "none"
+    )
     grounded = "✅" if entry["grounded"] else "⚠️"
     combo = f"{entry['chunk_strategy']} | {entry['embedding_model']} | {entry['backend']} | {entry['scope']}"
     return (
-        f"`{entry['timestamp']}` {grounded} **{combo}** — \"{entry['query']}\"\n\n"
+        f"`{entry['timestamp']}` {grounded} **{combo}** — \n\"{entry['query']}\"\n"
         f"{entry['answer']}\n\n"
-        f"*{citations}*"
+        f"{citations}"
     )
 
 
@@ -78,7 +80,7 @@ with gr.Blocks(title="RAG mission") as demo:
     history_state = gr.State([])
 
     with gr.Row():
-        query = gr.Textbox(placeholder="Ask a question about the Hugging Face docs...", scale=4)
+        query = gr.Textbox(label="ask", placeholder="Ask a question about the Hugging Face docs...", scale=4)
         ask_btn = gr.Button("Ask", variant="primary", scale=1)
 
     with gr.Row():
