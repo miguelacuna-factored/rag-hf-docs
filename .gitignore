@@ -220,3 +220,6 @@ __marimo__/
 # Regenerable local caches (chunked docs, eval set, vector store) — see plan.md 0.c
 /data/
 /vectordb/
+
+# Transfer archives (scripts/compress-all-data.sh) — not committed, shared out-of-band
+*.tar
