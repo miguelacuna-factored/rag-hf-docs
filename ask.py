@@ -8,7 +8,7 @@ grounded in only those chunks, instead of its own unconstrained recall.
 import logfire
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from generation import generate_answer
+from generation import LOCAL_MODEL_ID, generate_answer
 from retrieval import search
 
 
@@ -17,7 +17,7 @@ def ask(
     collection_name: str,
     embedder: HuggingFaceEmbeddings,
     embedding_model: str,
-    backend: str = "local",
+    backend: str = LOCAL_MODEL_ID,
 ) -> dict:
     """Run retrieval then generation for `query`; skips generation if nothing relevant was found."""
     with logfire.span(

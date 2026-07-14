@@ -62,7 +62,7 @@ def _chunk_recursive(docs: list[Document]) -> list[Document]:
 
 
 def _chunk_semantic(docs: list[Document], embedder: HuggingFaceEmbeddings | None) -> list[Document]:
-    splitter = SemanticChunker(embedder)
+    splitter = SemanticChunker(embedder, breakpoint_threshold_amount=50)
     return splitter.split_documents(docs)
 
 

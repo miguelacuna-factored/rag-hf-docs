@@ -7,6 +7,7 @@ a source instead of the model's own (possibly wrong) recall.
 
 import os
 import re
+import time
 
 import anthropic
 import logfire
@@ -29,12 +30,12 @@ Question: {query}
 Answer:"""
 
 
-def generate_answer(query: str, chunks: list[Document], backend: str = "local") -> dict:
-    """Generate a cited answer to `query` from retrieved `chunks` via the "local" or "api" backend."""
+def generate_answer(query: str, chunks: list[Document], backend: str = LOCAL_MODEL_ID) -> dict:
+    """Generate a cited answer to `query` from retrieved `chunks` via `backend` (a model ID: LOCAL_MODEL_ID or API_MODEL_ID)."""
     prompt = _build_prompt(query, chunks)
-    if backend == "local":
+    if backend == LOCAL_MODEL_ID:
         raw_answer = _call_local(prompt)
-    elif backend == "api":
+    elif backend == API_MODEL_ID:
         raw_answer = _call_api(prompt)
     else:
         raise ValueError(f"Unknown backend: {backend!r}")
@@ -61,17 +62,33 @@ def _pick_dtype() -> str:
 _local_pipeline = None
 
 
+def warm_local_pipeline() -> None:
+    """Build (once) and cache the local pipeline ahead of a query, so the first `ask()` isn't the cold start."""
+    global _local_pipeline
+    if _local_pipeline is None:
+        _local_pipeline = pipeline("text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype())
+
+
 def _call_local(prompt: str) -> str:
-    # No Logfire integration exists for transformers pipelines, so this span is manual —
-    # unlike _call_api, it won't get automatic token/cost fields.
+    # No Logfire integration exists for transformers pipelines, so token/duration
+    # metrics are captured manually here, from the pipeline's own tokenizer and
+    # a wall-clock timer — there's no cost field, since local inference has none.
     with logfire.span("local_generate", model=LOCAL_MODEL_ID):
-        global _local_pipeline
-        if _local_pipeline is None:
-            _local_pipeline = pipeline(
-                "text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype()
-            )
+        warm_local_pipeline()
+        start = time.perf_counter()
         output = _local_pipeline([{"role": "user", "content": prompt}], max_new_tokens=300)
-        return output[0]["generated_text"][-1]["content"]
+        duration_seconds = time.perf_counter() - start
+        answer = output[0]["generated_text"][-1]["content"]
+        tokenizer = _local_pipeline.tokenizer
+        input_tokens = len(tokenizer(prompt)["input_ids"])
+        output_tokens = len(tokenizer(answer)["input_ids"])
+        logfire.info(
+            "local generation complete",
+            duration_seconds=duration_seconds,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        return answer
 
 
 def _call_api(prompt: str) -> str:
