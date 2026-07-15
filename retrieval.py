@@ -13,14 +13,21 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from vectorstore import VECTORDB_DIR
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+DEFAULT_CHUNKS_TOP_K = 5
 
 
-def search(query: str, name: str, embedder: HuggingFaceEmbeddings, embedding_model: str, k: int = 5) -> list[Document]:
+def search(
+    query: str,
+    name: str,
+    embedder: HuggingFaceEmbeddings,
+    embedding_model: str,
+    chunks_top_k: int = DEFAULT_CHUNKS_TOP_K,
+) -> list[Document]:
     """Semantic search over Chroma collection `name`; applies the BGE query-instruction prefix when embedding_model == "bge"."""
-    with logfire.span("retrieval", name=name, embedding_model=embedding_model, k=k):
+    with logfire.span("retrieval", name=name, embedding_model=embedding_model, chunks_top_k=chunks_top_k):
         store = Chroma(collection_name=name, embedding_function=embedder, persist_directory=str(VECTORDB_DIR))
         search_query = f"{BGE_QUERY_PREFIX}{query}" if embedding_model == "bge" else query
-        scored = store.similarity_search_with_score(search_query, k=k)
+        scored = store.similarity_search_with_score(search_query, k=chunks_top_k)
         for doc, score in scored:
             doc.metadata["distance"] = score  # carried through generation into citations (see _parse_answer)
         chunks = [

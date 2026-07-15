@@ -7,7 +7,12 @@ load_dotenv()
 import logfire
 
 # rag-hf-docs sends telemetry to its own Logfire project (us region); LOGFIRE_TOKEN in .env picks the project.
-logfire.configure(advanced=logfire.AdvancedOptions(base_url="https://logfire-us.pydantic.dev"))
+logfire.configure(
+    service_name="rag-hf-docs",
+    service_version="0.1.0",
+    environment="local",
+    advanced=logfire.AdvancedOptions(base_url="https://logfire-us.pydantic.dev"),
+)
 logfire.instrument_anthropic()  # covers the "api" backend; the local HF backend gets a manual span (see generation.py)
 
 from datetime import datetime
@@ -16,7 +21,9 @@ import gradio as gr
 
 from ask import ask
 from embeddings import get_embedder
-from generation import LOCAL_MODEL_ID, warm_local_pipeline
+from generation import LOCAL_MODEL_ID, MAX_NEW_TOKENS, warm_local_pipeline
+from metrics import errors_total
+from retrieval import DEFAULT_CHUNKS_TOP_K
 from vectorstore import collection_name, list_built_scopes
 
 CHUNK_STRATEGIES = ["recursive", "semantic"]
@@ -43,15 +50,20 @@ def format_entry(entry: dict) -> str:
     combo = f"{entry['chunk_strategy']} | {entry['embedding_model']} | {entry['backend']} | {entry['scope']}"
     return (
         f"`{entry['timestamp']}` {grounded} **{combo}** — \n\"{entry['query']}\"\n"
-        f"{entry['answer']}\n\n"
+        f"{entry['answer']}\n"
         f"{citations}"
     )
 
 
-def run_query(query, chunk_strategy, embedding_model, backend, scope, history):
+def run_query(query, chunk_strategy, embedding_model, backend, scope, chunks_top_k, max_tokens, history):
     embedder = get_embedder(embedding_model)
     name = collection_name(chunk_strategy, embedding_model, scope)
-    result = ask(query, name, embedder, embedding_model, backend)
+    try:
+        result = ask(query, name, embedder, embedding_model, backend, chunks_top_k=chunks_top_k, max_tokens=max_tokens)
+    except Exception:
+        logfire.exception("ask failed", backend=backend, embedding_model=embedding_model, collection_name=name)
+        errors_total.add(1, {"backend": backend})
+        result = {"answer": "Something went wrong answering this query. Check the logs for details.", "citations": [], "grounded": False}
     entry = {
         "query": query,
         "chunk_strategy": chunk_strategy,
@@ -108,11 +120,29 @@ with gr.Blocks(title="RAG mission") as demo:
             scopes, value=scopes[0], label="Scope", info="How much of the corpus was indexed."
         )
 
+    with gr.Row():
+        chunks_top_k = gr.Slider(
+            minimum=1,
+            maximum=20,
+            value=DEFAULT_CHUNKS_TOP_K,
+            step=1,
+            label="Chunks retrieved (k)",
+            info="How many chunks retrieval hands to the LLM — more gives the answer a wider net, but also more noise.",
+        )
+        max_tokens = gr.Slider(
+            minimum=50,
+            maximum=1000,
+            value=MAX_NEW_TOKENS,
+            step=50,
+            label="Max response tokens",
+            info="Upper bound on how long the generated answer can be.",
+        )
+
     log = gr.Markdown(label="History")
 
     ask_btn.click(fn=start_loading, outputs=ask_btn).then(
         fn=run_query,
-        inputs=[query, chunk_strategy, embedding_model, backend, scope, history_state],
+        inputs=[query, chunk_strategy, embedding_model, backend, scope, chunks_top_k, max_tokens, history_state],
         outputs=[history_state, log],
     ).then(fn=stop_loading, outputs=ask_btn)
 

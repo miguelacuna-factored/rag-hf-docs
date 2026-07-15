@@ -67,7 +67,7 @@ def score_retrieval(
     """Compute Hit Rate@k, MRR@k, Precision@k for one collection over `eval_set`."""
     hits, reciprocal_ranks, precisions = [], [], []
     for item in eval_set:
-        results = search(item["query"], collection_name, embedder, embedding_model, k=k)
+        results = search(item["query"], collection_name, embedder, embedding_model, chunks_top_k=k)
         correct_ranks = [rank for rank, doc in enumerate(results, start=1) if doc.metadata["source"] == item["source"]]
         hits.append(1 if correct_ranks else 0)
         reciprocal_ranks.append(1 / correct_ranks[0] if correct_ranks else 0)
