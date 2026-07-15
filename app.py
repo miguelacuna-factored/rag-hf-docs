@@ -18,10 +18,12 @@ logfire.instrument_anthropic()  # covers the "api" backend; the local HF backend
 from datetime import datetime
 
 import gradio as gr
+from langfuse import propagate_attributes
 
 from ask import ask
 from embeddings import get_embedder
 from generation import LOCAL_MODEL_ID, MAX_NEW_TOKENS, warm_local_pipeline
+from langfuse_client import langfuse
 from metrics import errors_total
 from retrieval import DEFAULT_CHUNKS_TOP_K
 from vectorstore import collection_name, list_built_scopes
@@ -55,15 +57,30 @@ def format_entry(entry: dict) -> str:
     )
 
 
-def run_query(query, chunk_strategy, embedding_model, backend, scope, chunks_top_k, max_tokens, history):
+def run_query(
+    query, chunk_strategy, embedding_model, backend, scope, chunks_top_k, max_tokens, history,
+    request: gr.Request = None, session_id: str = None,
+):
     embedder = get_embedder(embedding_model)
     name = collection_name(chunk_strategy, embedding_model, scope)
+    # session_hash is a fresh random id per browser tab load (regenerated on refresh), so it
+    # naturally maps to "one sitting" — grouping this tab's queries into one Langfuse session.
+    # `session_id` lets callers outside a Gradio request (e.g. seed_demo_metrics.py) supply
+    # their own, so separate script runs don't all collapse into one indistinguishable session.
+    if session_id is None:
+        session_id = request.session_hash if request is not None else "cli"
     try:
-        result = ask(query, name, embedder, embedding_model, backend, chunks_top_k=chunks_top_k, max_tokens=max_tokens)
+        with propagate_attributes(session_id=session_id):
+            result = ask(query, name, embedder, embedding_model, backend, chunks_top_k=chunks_top_k, max_tokens=max_tokens)
     except Exception:
         logfire.exception("ask failed", backend=backend, embedding_model=embedding_model, collection_name=name)
         errors_total.add(1, {"backend": backend})
-        result = {"answer": "Something went wrong answering this query. Check the logs for details.", "citations": [], "grounded": False}
+        result = {
+            "answer": "Something went wrong answering this query. Check the logs for details.",
+            "citations": [],
+            "grounded": False,
+            "trace_id": None,
+        }
     entry = {
         "query": query,
         "chunk_strategy": chunk_strategy,
@@ -86,8 +103,26 @@ def stop_loading():
     return gr.update(value="Ask", interactive=True)
 
 
+def show_session(request: gr.Request) -> str:
+    """Displayed so the demo audience can see which Langfuse session this tab's queries land in."""
+    return f"Session: `{request.session_hash[:8]}` (a new one is assigned every time this page reloads)"
+
+
+def record_feedback(positive: bool, history: list) -> str:
+    """Score the most recent answer's trace with a thumbs up/down, visible in Langfuse under that trace's scores."""
+    if not history:
+        return "Ask a question first."
+    trace_id = history[-1].get("trace_id")
+    if not trace_id:
+        return "No trace to attach feedback to for that answer."
+    langfuse.create_score(trace_id=trace_id, name="user_feedback", value=1 if positive else 0, data_type="BOOLEAN")
+    return "Thanks for the feedback!" if positive else "Thanks — noted as not helpful."
+
+
 with gr.Blocks(title="RAG mission") as demo:
     gr.Markdown("# RAG mission - Querying Hugging Face")
+    session_display = gr.Markdown()
+    demo.load(fn=show_session, outputs=session_display)
     scopes = list_built_scopes()
     history_state = gr.State([])
 
@@ -140,11 +175,19 @@ with gr.Blocks(title="RAG mission") as demo:
 
     log = gr.Markdown(label="History")
 
+    with gr.Row():
+        thumbs_up = gr.Button("👍 Good answer", size="sm")
+        thumbs_down = gr.Button("👎 Not helpful", size="sm")
+        feedback_status = gr.Markdown()
+
     ask_btn.click(fn=start_loading, outputs=ask_btn).then(
         fn=run_query,
         inputs=[query, chunk_strategy, embedding_model, backend, scope, chunks_top_k, max_tokens, history_state],
         outputs=[history_state, log],
     ).then(fn=stop_loading, outputs=ask_btn)
+
+    thumbs_up.click(fn=lambda history: record_feedback(True, history), inputs=history_state, outputs=feedback_status)
+    thumbs_down.click(fn=lambda history: record_feedback(False, history), inputs=history_state, outputs=feedback_status)
 
 if __name__ == "__main__":
     warm_embedder("minilm")

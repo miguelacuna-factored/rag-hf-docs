@@ -6,6 +6,7 @@ Run from the repo root: uv run python scripts/seed_demo_metrics.py
 """
 
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -16,6 +17,9 @@ from langfuse_client import langfuse
 from vectorstore import list_built_scopes
 
 SCOPE = "full" if "full" in list_built_scopes() else "subset"
+# One session per script run, so re-running this to seed more demo data doesn't collapse
+# every run's traces into a single indistinguishable Langfuse session.
+SESSION_ID = f"seed-script-{uuid.uuid4().hex[:8]}"
 
 # Each case: (chunk_strategy, embedding_model, backend, query, chunks_top_k, max_tokens)
 CASES = [
@@ -36,14 +40,17 @@ ERROR_CASE = ("recursive", "minilm", "bogus-backend-id", "what is RAG?", 5, 300)
 
 
 def run_case(chunk_strategy, embedding_model, backend, query, chunks_top_k, max_tokens):
-    history, _ = run_query(query, chunk_strategy, embedding_model, backend, SCOPE, chunks_top_k, max_tokens, [])
+    history, _ = run_query(
+        query, chunk_strategy, embedding_model, backend, SCOPE, chunks_top_k, max_tokens, [], session_id=SESSION_ID
+    )
     entry = history[-1]
     grounded = "grounded" if entry["grounded"] else "ungrounded"
     print(f"[{backend} | {chunk_strategy} | {embedding_model}] {grounded}: {entry['answer'][:80]!r}")
 
 
 if __name__ == "__main__":
-    print(f"Seeding demo metrics against scope={SCOPE!r} ({len(CASES)} cases + 1 nice-to-have error case)\n")
+    print(f"Seeding demo metrics against scope={SCOPE!r} ({len(CASES)} cases + 1 nice-to-have error case)")
+    print(f"Langfuse session for this run: {SESSION_ID}\n")
     for case in CASES:
         run_case(*case)
 

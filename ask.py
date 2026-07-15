@@ -47,14 +47,16 @@ def ask(
             },
         ) as span,
     ):
+        # Kept on the result so a caller (the Gradio UI) can attach a user-feedback
+        # score to this exact trace later, after the span has already closed.
+        trace_id = langfuse.get_current_trace_id()
         queries_total.add(1, {"backend": backend, "embedding_model": embedding_model, "collection_name": collection_name})
         chunks = search(query, collection_name, embedder, embedding_model, chunks_top_k=chunks_top_k)
         if not chunks:
             result = {"answer": "No relevant information found in the corpus.", "citations": [], "grounded": False}
-            span.update(output=result)
-            span.score(name="grounded", value=0, data_type="BOOLEAN")
-            return result
-        result = generate_answer(query, chunks, backend, max_tokens)
+        else:
+            result = generate_answer(query, chunks, backend, max_tokens)
         span.update(output=result)
         span.score(name="grounded", value=1 if result["grounded"] else 0, data_type="BOOLEAN")
+        result["trace_id"] = trace_id
         return result
