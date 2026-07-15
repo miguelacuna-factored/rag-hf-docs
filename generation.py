@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from transformers import GenerationConfig, pipeline
 
+from langfuse_client import langfuse
 from metrics import answers_total, generation_duration_seconds, truncated_total
 
 load_dotenv()
@@ -90,7 +91,12 @@ def _call_local(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
     # No Logfire integration exists for transformers pipelines, so token/duration
     # metrics are captured manually here, from the pipeline's own tokenizer and
     # a wall-clock timer — there's no cost field, since local inference has none.
-    with logfire.span("local_generate", model=LOCAL_MODEL_ID, max_tokens=max_tokens):
+    with (
+        logfire.span("local_generate", model=LOCAL_MODEL_ID, max_tokens=max_tokens),
+        langfuse.start_as_current_observation(
+            as_type="generation", name="local_generate", model=LOCAL_MODEL_ID, input=prompt
+        ) as gen,
+    ):
         warm_local_pipeline()
         # A GenerationConfig built from scratch (rather than max_new_tokens= as a bare
         # kwarg) avoids colliding with the model's inherited default max_length=20 —
@@ -114,6 +120,11 @@ def _call_local(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
             output_tokens=output_tokens,
             truncated=truncated,
         )
+        gen.update(
+            output=answer,
+            usage_details={"input": input_tokens, "output": output_tokens},
+            metadata={"duration_seconds": duration_seconds, "truncated": truncated},
+        )
         generation_duration_seconds.record(duration_seconds, {"backend": LOCAL_MODEL_ID})
         if truncated:
             truncated_total.add(1, {"backend": LOCAL_MODEL_ID})
@@ -122,27 +133,35 @@ def _call_local(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
 
 def _call_api(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
     client = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
-    start = time.perf_counter()
-    response = client.messages.create(
-        model=API_MODEL_ID,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    duration_seconds = time.perf_counter() - start
-    truncated = response.stop_reason == "max_tokens"
-    logfire.info(
-        "api generation complete",
-        backend=API_MODEL_ID,
-        duration_seconds=duration_seconds,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-        stop_reason=response.stop_reason,
-        truncated=truncated,
-    )
-    generation_duration_seconds.record(duration_seconds, {"backend": API_MODEL_ID})
-    if truncated:
-        truncated_total.add(1, {"backend": API_MODEL_ID})
-    return response.content[0].text
+    with langfuse.start_as_current_observation(
+        as_type="generation", name="api_generate", model=API_MODEL_ID, input=prompt
+    ) as gen:
+        start = time.perf_counter()
+        response = client.messages.create(
+            model=API_MODEL_ID,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        duration_seconds = time.perf_counter() - start
+        truncated = response.stop_reason == "max_tokens"
+        logfire.info(
+            "api generation complete",
+            backend=API_MODEL_ID,
+            duration_seconds=duration_seconds,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            stop_reason=response.stop_reason,
+            truncated=truncated,
+        )
+        gen.update(
+            output=response.content[0].text,
+            usage_details={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+            metadata={"duration_seconds": duration_seconds, "truncated": truncated, "stop_reason": response.stop_reason},
+        )
+        generation_duration_seconds.record(duration_seconds, {"backend": API_MODEL_ID})
+        if truncated:
+            truncated_total.add(1, {"backend": API_MODEL_ID})
+        return response.content[0].text
 
 
 def _parse_answer(raw_answer: str, chunks: list[Document]) -> dict:

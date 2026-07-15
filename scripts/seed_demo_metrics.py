@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import run_query
 from generation import API_MODEL_ID, LOCAL_MODEL_ID
+from langfuse_client import langfuse
 from vectorstore import list_built_scopes
 
 SCOPE = "full" if "full" in list_built_scopes() else "subset"
@@ -51,4 +52,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[error case] raised outside run_query's own handling ({e!r}) — still fine, this is a nice-to-have.")
 
-    print("\nDone. Check the Logfire dashboard/live view for the new data.")
+    langfuse.flush()  # short-lived script — the background flush thread wouldn't get a chance to run otherwise
+    print("\nDone. Check the Logfire dashboard/live view and the Langfuse traces view for the new data.")
