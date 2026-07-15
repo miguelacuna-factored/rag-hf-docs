@@ -29,11 +29,18 @@ NOT_IN_CORPUS_PHRASE = "The answer isn't in the corpus."
 LOCAL_DO_SAMPLE = False
 MAX_NEW_TOKENS = 300
 
-PROMPT_TEMPLATE = """Answer the question using ONLY the numbered sources below. Cite sources inline using [1], [2], etc. If the sources don't contain the answer, respond exactly with: "{not_in_corpus}"
+PROMPT_NAME = "rag-answer"
 
-{sources}
+# Langfuse-managed (see scripts/setup_langfuse_prompt.py), fetched by PROMPT_NAME below. Also
+# doubles as the `fallback=` passed to get_prompt(), so the app behaves exactly as it does today
+# if Langfuse is unreachable on a cold cache — see caching docs: after the first successful fetch
+# this is never needed again, since the prompt is cached client-side. Uses Langfuse's {{var}}
+# templating syntax (not Python .format()) so the same string works from either source.
+FALLBACK_PROMPT_TEMPLATE = """Answer the question using ONLY the numbered sources below. Cite sources inline using [1], [2], etc. Be concise — 2-3 sentences. If the sources don't contain the answer, respond exactly with: "{{not_in_corpus}}"
 
-Question: {query}
+{{sources}}
+
+Question: {{query}}
 Answer:"""
 
 
@@ -41,11 +48,11 @@ def generate_answer(
     query: str, chunks: list[Document], backend: str = LOCAL_MODEL_ID, max_tokens: int = MAX_NEW_TOKENS
 ) -> dict:
     """Generate a cited answer to `query` from retrieved `chunks` via `backend` (a model ID: LOCAL_MODEL_ID or API_MODEL_ID)."""
-    prompt = _build_prompt(query, chunks)
+    prompt, prompt_client = _build_prompt(query, chunks)
     if backend == LOCAL_MODEL_ID:
-        raw_answer = _call_local(prompt, max_tokens)
+        raw_answer = _call_local(prompt, prompt_client, max_tokens)
     elif backend == API_MODEL_ID:
-        raw_answer = _call_api(prompt, max_tokens)
+        raw_answer = _call_api(prompt, prompt_client, max_tokens)
     else:
         raise ValueError(f"Unknown backend: {backend!r}")
     result = _parse_answer(raw_answer, chunks)
@@ -60,12 +67,16 @@ def generate_answer(
     return result
 
 
-def _build_prompt(query: str, chunks: list[Document]) -> str:
+def _build_prompt(query: str, chunks: list[Document]):
     sources = "\n\n".join(
         f"[{i}] (source: {chunk.metadata['source']})\n{chunk.page_content}"
         for i, chunk in enumerate(chunks, start=1)
     )
-    return PROMPT_TEMPLATE.format(not_in_corpus=NOT_IN_CORPUS_PHRASE, sources=sources, query=query)
+    # cache_ttl_seconds=300: revalidate every 5 minutes rather than Langfuse's 60s default —
+    # a prompt edited in the UI mid-demo doesn't need to take effect within a second.
+    prompt_client = langfuse.get_prompt(PROMPT_NAME, fallback=FALLBACK_PROMPT_TEMPLATE, cache_ttl_seconds=300)
+    prompt = prompt_client.compile(not_in_corpus=NOT_IN_CORPUS_PHRASE, sources=sources, query=query)
+    return prompt, prompt_client
 
 
 def _pick_dtype() -> str:
@@ -87,14 +98,14 @@ def warm_local_pipeline() -> None:
         _local_pipeline = pipeline("text-generation", model=LOCAL_MODEL_ID, device_map="auto", dtype=_pick_dtype())
 
 
-def _call_local(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
+def _call_local(prompt: str, prompt_client, max_tokens: int = MAX_NEW_TOKENS) -> str:
     # No Logfire integration exists for transformers pipelines, so token/duration
     # metrics are captured manually here, from the pipeline's own tokenizer and
     # a wall-clock timer — there's no cost field, since local inference has none.
     with (
         logfire.span("local_generate", model=LOCAL_MODEL_ID, max_tokens=max_tokens),
         langfuse.start_as_current_observation(
-            as_type="generation", name="local_generate", model=LOCAL_MODEL_ID, input=prompt
+            as_type="generation", name="local_generate", model=LOCAL_MODEL_ID, input=prompt, prompt=prompt_client
         ) as gen,
     ):
         warm_local_pipeline()
@@ -131,10 +142,10 @@ def _call_local(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
         return answer
 
 
-def _call_api(prompt: str, max_tokens: int = MAX_NEW_TOKENS) -> str:
+def _call_api(prompt: str, prompt_client, max_tokens: int = MAX_NEW_TOKENS) -> str:
     client = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
     with langfuse.start_as_current_observation(
-        as_type="generation", name="api_generate", model=API_MODEL_ID, input=prompt
+        as_type="generation", name="api_generate", model=API_MODEL_ID, input=prompt, prompt=prompt_client
     ) as gen:
         start = time.perf_counter()
         response = client.messages.create(
