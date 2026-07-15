@@ -223,3 +223,6 @@ __marimo__/
 
 # Transfer archives (scripts/compress-all-data.sh) — not committed, shared out-of-band
 *.tar
+
+# MacOs
+.DS_Store
